@@ -30,36 +30,7 @@ import (
 	"6.824/labrpc"
 )
 
-//
-// as each Raft peer becomes aware that successive log entries are
-// committed, the peer should send an ApplyMsg to the service (or
-// tester) on the same server, via the applyCh passed to Make(). set
-// CommandValid to true to indicate that the ApplyMsg contains a newly
-// committed log entry.
-//
-// in part 2D you'll want to send other kinds of messages (e.g.,
-// snapshots) on the applyCh, but set CommandValid to false for these
-// other uses.
-//
-type ApplyMsg struct {
-	CommandValid bool
-	Command      interface{}
-	CommandIndex int
-
-	// For 2D:
-	SnapshotValid bool
-	Snapshot      []byte
-	SnapshotTerm  int
-	SnapshotIndex int
-}
-
-// empty log struct to be implemented
-type logEntry struct {
-	Command string
-	Term    int
-}
-
-//
+// Raft
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
@@ -89,9 +60,13 @@ type Raft struct {
 	LastHeartbeat int64
 	//
 	tickets int
+	//
+	applyCh chan ApplyMsg
+	//
+	applyCond *sync.Cond
 }
 
-// return currentTerm and whether this server
+// GetState return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
@@ -143,7 +118,7 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-//
+// CondInstallSnapshot
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
 //
@@ -154,7 +129,7 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 	return true
 }
 
-// the service says it has created a snapshot that has
+// Snapshot the service says it has created a snapshot that has
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
@@ -163,31 +138,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-//
-// the service using Raft (e.g. a k/v server) wants to start
-// agreement on the next command to be appended to Raft's log. if this
-// server isn't the leader, returns false. otherwise start the
-// agreement and return immediately. there is no guarantee that this
-// command will ever be committed to the Raft log, since the leader
-// may fail or lose an election. even if the Raft instance has been killed,
-// this function should return gracefully.
-//
-// the first return value is the index that the command will appear at
-// if it's ever committed. the second return value is the current
-// term. the third return value is true if this server believes it is
-// the leader.
-//
-func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
-	// Your code here (2B).
-
-	return index, term, isLeader
-}
-
-//
+// Kill
 // the tester doesn't halt goroutines created by Raft after each test,
 // but it does call the Kill() method. your code can use killed() to
 // check whether Kill() has been called. the use of atomic avoids the
@@ -209,7 +160,7 @@ func (rf *Raft) killed() bool {
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
-// heartsbeats recently.
+// heartbeats recently.
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		// Your code here to check if a leader election should
@@ -219,18 +170,18 @@ func (rf *Raft) ticker() {
 		//
 		//
 		before := rf.GetLastHeartbeat()
-		DPrintf("%d begin to sleep", rf.me)
+		//DPrintf("%d begin to sleep", rf.me)
 		time.Sleep(rf.GetElectionTimeout())
 		after := rf.GetLastHeartbeat()
-		DPrintf("%d end sleep, role = %s", rf.me, rf.GetRole())
+		//DPrintf("%d end sleep, role = %s", rf.me, rf.GetRole())
 		if before == after && rf.GetRole() != "leader" {
 			rf.mu.Lock()
 			rf.Role = "candidate"
 			rf.votedFor = rf.me
 			rf.tickets = 1
 			rf.currenctTerm++
-			DPrintf("%d become candidate, term = %d", rf.me, rf.currenctTerm)
-			DPrintf("%d send Vote to itself", rf.me)
+			//DPrintf("%d become candidate, term = %d", rf.me, rf.currenctTerm)
+			//DPrintf("%d send Vote to itself", rf.me)
 			go rf.Elect(rf.currenctTerm)
 			rf.mu.Unlock()
 		}
@@ -238,7 +189,7 @@ func (rf *Raft) ticker() {
 
 }
 
-//
+// Make
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -260,16 +211,21 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currenctTerm = 0
 	rf.votedFor = -1
 
-	rf.commitIndex = -1
-	rf.lastApplied = -1
+	rf.applyCh = applyCh
+	rf.applyCond = sync.NewCond(&rf.mu)
+
+	rf.commitIndex = 0
+	rf.lastApplied = 0
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
-
+	rf.log = append(rf.log, logEntry{Term: -1})
 	rf.Role = "follower"
-
+	//rf.commitCount=make(map[int]int)
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	// apply the message to client ( from lecture)
+	go rf.applier()
 	// start ticker goroutine to start elections
 	go rf.ticker()
 

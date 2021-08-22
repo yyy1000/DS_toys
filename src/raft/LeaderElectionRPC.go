@@ -29,32 +29,25 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	reply.Term = rf.currenctTerm
-	//rf.restart = true
-	/*
-		if args.Term < rf.currenctTerm {
-			DPrintf("%d deny %d's request", rf.me, args.CandidateId)
-			reply.VoteGranted = false
-		}
-	*/
-	var logTerm int
-	logLen := len(rf.log)
-	if logLen == 0 {
-		logTerm = -1
-	} else {
-		logTerm = rf.log[logLen-1].Term
+	if args.Term > rf.currenctTerm{
+		rf.NewTerm(args.Term)
 	}
-	if (((rf.votedFor == -1) || (args.Term > rf.currenctTerm)) || (rf.votedFor == args.CandidateId && args.Term == rf.currenctTerm)) &&
-		((args.LastLogTerm > logTerm) || (args.Term == logTerm && args.LastLogIndex >= logLen)) {
+	//rf.restart = true
+	var logTerm int
+	logLastIndex := len(rf.log) - 1
+	logTerm = rf.log[logLastIndex].Term
+	uptodate := (args.LastLogTerm > logTerm) || (args.LastLogTerm == logTerm && args.LastLogIndex >= logLastIndex)
+	if args.Term < rf.currenctTerm{
+		reply.VoteGranted = false
+	}else if ((rf.votedFor == -1) || (rf.votedFor == args.CandidateId)) && uptodate{
 		reply.VoteGranted = true
-		rf.currenctTerm = args.Term
 		rf.votedFor = args.CandidateId
-		DPrintf("%d term:%d vote %d's request, candidate.term = %d", rf.me, rf.currenctTerm, args.CandidateId, args.Term)
+		//DPrintf("%d term:%d vote %d's request, candidate.term = %d", rf.me, rf.currenctTerm, args.CandidateId, args.Term)
 		rf.UpdateHeartbeat()
-		rf.Role = "follower"
+		//rf.Role = "follower"
 	} else {
 		reply.VoteGranted = false
-		DPrintf("%d deny %d's request", rf.me, args.CandidateId)
+		//DPrintf("%d deny %d's request", rf.me, args.CandidateId)
 	}
 	reply.Term = rf.currenctTerm
 }
@@ -92,7 +85,11 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
-
+func (rf *Raft) NewTerm(term int)  {
+	rf.currenctTerm = term
+	rf.Role = "follower"
+	rf.votedFor = -1
+}
 func (rf *Raft) Elect(currenctTerm int) {
 	for i := range rf.peers {
 		if i != rf.me {
@@ -105,27 +102,26 @@ func (rf *Raft) HelpRequestVote(term int, i int) {
 	args := RequestVoteArgs{
 		Term:        term,
 		CandidateId: rf.me,
-		// LastLogIndex still not know
-		LastLogIndex: len(rf.log) - 1,
+		LastLogIndex: len(rf.log)-1,
+		LastLogTerm : rf.log[len(rf.log) - 1].Term,
 	}
-	if args.LastLogIndex == -1 {
-		args.LastLogTerm = 0
-	}
-	DPrintf("%d send RequestVote to %d", rf.me, i)
+	//DPrintf("%d send RequestVote to %d", rf.me, i)
 	replys := RequestVoteReply{}
-	rf.sendRequestVote(i, &args, &replys)
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	if replys.Term > term {
-		rf.Role = "follower"
-		rf.currenctTerm = max(replys.Term, rf.currenctTerm)
-	}
-	if replys.VoteGranted && rf.currenctTerm == term {
-		rf.tickets++
-	}
-	if rf.tickets > len(rf.peers)/2 && rf.Role == "candidate" {
-		DPrintf("%d become leader", rf.me)
-		rf.Role = "leader"
-		go rf.sendHeartBeat()
+	ok := rf.sendRequestVote(i, &args, &replys)
+	if ok {
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		if replys.Term > term {
+			rf.Role = "follower"
+			rf.currenctTerm = max(replys.Term, rf.currenctTerm)
+		}
+		if replys.VoteGranted && rf.currenctTerm == term {
+			rf.tickets++
+		}
+		if rf.tickets > len(rf.peers)/2 && rf.Role == "candidate" {
+			//DPrintf("%d become leader", rf.me)
+			rf.BecomeLeader()
+			go rf.sendHeartBeat()
+		}
 	}
 }
