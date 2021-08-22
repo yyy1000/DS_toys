@@ -24,8 +24,6 @@ import (
 
 	"sync"
 	"sync/atomic"
-	"time"
-
 	//	"6.824/labgob"
 	"6.824/labrpc"
 )
@@ -47,7 +45,7 @@ type Raft struct {
 	//persistent state on all servers
 	currenctTerm int
 	votedFor     int
-	log          []logEntry
+	log          Log
 	//volatile state on all servers
 	commitIndex int
 	lastApplied int
@@ -60,10 +58,15 @@ type Raft struct {
 	LastHeartbeat int64
 	//
 	tickets int
-	//
-	applyCh chan ApplyMsg
-	//
+	// use for 2B: log
+	applyCh   chan ApplyMsg
 	applyCond *sync.Cond
+
+	// copy from lecture
+	// temporary location to give the service snapshot to the apply thread
+	waitingSnapshot []byte
+	waitingIndex    int // lastIncludedIndex
+	waitingTerm     int //lastIncludedTerm
 }
 
 // GetState return currentTerm and whether this server
@@ -75,7 +78,7 @@ func (rf *Raft) GetState() (int, bool) {
 	var isleader bool
 	// Your code here (2A).
 	term = rf.currenctTerm
-	isleader = (rf.Role == "leader")
+	isleader = rf.Role == "leader"
 	// here just return the fields
 	return term, isleader
 }
@@ -159,36 +162,6 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-// The ticker go routine starts a new election if this peer hasn't received
-// heartbeats recently.
-func (rf *Raft) ticker() {
-	for rf.killed() == false {
-		// Your code here to check if a leader election should
-		// be started and to randomize sleeping time using
-		// time.Sleep().
-
-		//
-		//
-		before := rf.GetLastHeartbeat()
-		//DPrintf("%d begin to sleep", rf.me)
-		time.Sleep(rf.GetElectionTimeout())
-		after := rf.GetLastHeartbeat()
-		//DPrintf("%d end sleep, role = %s", rf.me, rf.GetRole())
-		if before == after && rf.GetRole() != "leader" {
-			rf.mu.Lock()
-			rf.Role = "candidate"
-			rf.votedFor = rf.me
-			rf.tickets = 1
-			rf.currenctTerm++
-			//DPrintf("%d become candidate, term = %d", rf.me, rf.currenctTerm)
-			//DPrintf("%d send Vote to itself", rf.me)
-			go rf.Elect(rf.currenctTerm)
-			rf.mu.Unlock()
-		}
-	}
-
-}
-
 // Make
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -218,8 +191,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
-	rf.log = append(rf.log, logEntry{Term: -1})
+	//rf.log = append(rf.log, logEntry{Term: -1})
 	rf.Role = "follower"
+	rf.log = makeEmptyLog()
 	//rf.commitCount=make(map[int]int)
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

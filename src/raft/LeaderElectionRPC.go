@@ -34,8 +34,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	//rf.restart = true
 	var logTerm int
-	logLastIndex := len(rf.log) - 1
-	logTerm = rf.log[logLastIndex].Term
+	logLastIndex := rf.log.lastIndex()
+	logTerm = rf.log.entrys[logLastIndex].Term
 	uptodate := (args.LastLogTerm > logTerm) || (args.LastLogTerm == logTerm && args.LastLogIndex >= logLastIndex)
 	if args.Term < rf.currenctTerm{
 		reply.VoteGranted = false
@@ -91,37 +91,37 @@ func (rf *Raft) NewTerm(term int)  {
 	rf.votedFor = -1
 }
 func (rf *Raft) Elect(currenctTerm int) {
+	args := RequestVoteArgs{
+		Term:        currenctTerm,
+		CandidateId: rf.me,
+		LastLogIndex: rf.log.lastIndex(),
+		LastLogTerm : rf.log.entrys[rf.log.lastIndex()].Term,
+	}
 	for i := range rf.peers {
 		if i != rf.me {
-			go rf.HelpRequestVote(currenctTerm, i)
+			go rf.HelpRequestVote(&args, i)
 		}
 	}
 }
 
-func (rf *Raft) HelpRequestVote(term int, i int) {
-	args := RequestVoteArgs{
-		Term:        term,
-		CandidateId: rf.me,
-		LastLogIndex: len(rf.log)-1,
-		LastLogTerm : rf.log[len(rf.log) - 1].Term,
-	}
+func (rf *Raft) HelpRequestVote(args *RequestVoteArgs, i int) {
 	//DPrintf("%d send RequestVote to %d", rf.me, i)
 	replys := RequestVoteReply{}
-	ok := rf.sendRequestVote(i, &args, &replys)
+	ok := rf.sendRequestVote(i, args, &replys)
 	if ok {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-		if replys.Term > term {
-			rf.Role = "follower"
-			rf.currenctTerm = max(replys.Term, rf.currenctTerm)
+		if replys.Term > rf.currenctTerm {
+			rf.NewTerm(replys.Term)
 		}
-		if replys.VoteGranted && rf.currenctTerm == term {
+		if replys.VoteGranted {
 			rf.tickets++
-		}
-		if rf.tickets > len(rf.peers)/2 && rf.Role == "candidate" {
-			//DPrintf("%d become leader", rf.me)
-			rf.BecomeLeader()
-			go rf.sendHeartBeat()
+			if rf.tickets > len(rf.peers)/2 && rf.currenctTerm == args.Term && rf.Role != "leader"{
+				//DPrintf("%d become leader", rf.me)
+				rf.BecomeLeader()
+				// mind here, change heartbeat to append entries
+				go rf.sendHeartBeat()
+			}
 		}
 	}
 }

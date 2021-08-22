@@ -19,6 +19,7 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+	ConflictValid bool
 }
 
 //
@@ -32,7 +33,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term < rf.currenctTerm {
 		reply.Success,reply.Term = false,rf.currenctTerm
 		return
-	} else if len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PreLogTerm {
+	} else if rf.log.lastIndex() < args.PrevLogIndex || rf.log.entrys[args.PrevLogIndex].Term != args.PreLogTerm {
 		reply.Success = false
 	}else{
 		reply.Success = true
@@ -42,19 +43,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.UpdateHeartbeat()
 		rf.currenctTerm = args.Term
 		// mind here, still problem (not already in the log)
-		for i, onelog := range args.Entries{
+		for i := range args.Entries{
 			//DPrintf("now ready to append %d to %d,",args.PrevLogIndex+1+i,rf.me)
-			if (len(rf.log) <= args.PrevLogIndex+1+i) || (rf.log[args.PrevLogIndex+1+i].Term != args.Entries[i].Term){
+			if (rf.log.lastIndex() <= args.PrevLogIndex+i) || (rf.log.entrys[args.PrevLogIndex+1+i].Term != args.Entries[i].Term){
 				DPrintf("now ready to append %d to %d,",args.PrevLogIndex+1+i,rf.me)
-				rf.log = append(rf.log,onelog)
+				//rf.log = append(rf.log,onelog)
 			}
 		}
 		if args.LeaderCommit > rf.commitIndex {
-			rf.commitIndex = min(args.LeaderCommit, len(rf.log))
+			rf.commitIndex = min(args.LeaderCommit, rf.log.lastIndex()+1)
 		}
 	}
 	reply.Term = rf.currenctTerm
-	DPrintf("%d term:%d received %d:term= %d's message, loglen=%d, now len=%d", rf.me, rf.currenctTerm, args.LeadId, args.Term,len(args.Entries),len(rf.log))
+	DPrintf("%d term:%d received %d:term= %d's message, loglen=%d, now len=", rf.me, rf.currenctTerm, args.LeadId, args.Term,len(args.Entries))
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -79,27 +80,56 @@ func (rf *Raft) sendHeartBeat() {
 }
 
 func (rf *Raft) HelpHeartbeat(term int, i int) {
+	rf.mu.Lock()
 	args := AppendEntriesArgs{
 		Term:         term,
 		LeadId:       rf.me,
 		LeaderCommit: rf.commitIndex,
 	}
 	args.PrevLogIndex = rf.nextIndex[i] - 1
-	args.PreLogTerm = rf.log[args.PrevLogIndex].Term
+	args.PreLogTerm = rf.log.entrys[args.PrevLogIndex].Term
 	// mind here, not know how the entries
-	if rf.commitIndex+1 < len(rf.log) {
-		args.Entries = rf.log[rf.commitIndex+1:]
+	if rf.commitIndex < rf.log.lastIndex() {
+		//args.Entries = rf.log[rf.commitIndex+1:]
 	}
+	rf.mu.Unlock()
 	reply := AppendEntriesReply{}
 	rf.sendAppendEntries(i, &args, &reply)
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if reply.Term > rf.currenctTerm {
-		rf.Role = "follower"
-		rf.currenctTerm = reply.Term
-	}
 
+
+}
+
+func (rf *Raft) processAppendReply(peer int, args *AppendEntriesArgs,reply *AppendEntriesReply){
+	if reply.Term > rf.currenctTerm {
+		rf.NewTerm(reply.Term)
+	}else if reply.Term==rf.currenctTerm{
+		rf.processAppendReplyTerm(peer,args,reply)
+	}
+}
+func (rf *Raft) processAppendReplyTerm(peer int,args *AppendEntriesArgs,reply *AppendEntriesReply)  {
+	if reply.Success{
+		newmatch := args.PrevLogIndex + len(args.Entries)
+		newnext := newmatch + 1
+		if newnext > rf.nextIndex[peer]{
+			rf.nextIndex[peer] = newnext
+		}
+		if newmatch > rf.matchIndex[peer]{
+			rf.matchIndex[peer] = newmatch
+		}
+	}else if reply.ConflictValid{
+		rf.processConflictVaild(peer,args,reply)
+	}else if rf.nextIndex[peer] > 1{
+		rf.nextIndex[peer] -= 1
+		/*
+		if rf.nextIndex[peer] < rf.log.start() + 1{
+		rf.sendSnapShot(peer)
+		}
+		*/
+	}
+	rf.advanceCommit()
 }
 
 /*
