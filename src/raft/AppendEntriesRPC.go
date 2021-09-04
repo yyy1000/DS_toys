@@ -64,18 +64,18 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 }
 
 func (rf *Raft) sendHeartBeat() {
-	term, isleader := rf.GetState()
+	_,isleader := rf.GetState()
 	//go rf.ReceiveChan()
 	for isleader {
 		// no heartbeat message
 		for i := range rf.peers {
 			if i != rf.me {
-				go rf.HelpHeartbeat(term, i)
+				go rf.sendAppends(true)
 			}
 		}
 		//DPrintf("has send heartbeats once")
 		time.Sleep(HeartbeatInterval)
-		term, isleader = rf.GetState()
+		_, isleader = rf.GetState()
 	}
 }
 
